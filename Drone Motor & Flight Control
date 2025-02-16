@@ -1,0 +1,192 @@
+"""
+Development of a GUI-Driven, Autonomous Long-Range Drone
+with Dead-Reckoning for Environmental Monitoring Using LoRa Technology
+
+Main GUI for controlling the drone motors and issuing directional commands.
+This file serves the Main function, integrating manual motor control
+via sliders and directional commands for flight maneuvers.
+"""
+
+#!/usr/bin/env python3
+import time
+import pigpio
+import tkinter as tk
+from tkinter import ttk
+import numpy as np
+import smbus  # For IMU communication
+print("\n")
+print("=" * 60)
+print("Welcome to the Drone Control Room")
+print("Developer: Uzam Haider")
+print("Project: Development of a GUI-Driven, Fully Autonomous Long-Range Drone with Dead-Reckoning for Environmental Monitoring Using LoRa Technology")
+print("=" * 60)
+time.sleep(2)
+
+# ----- IMU Initialization -----
+IMU_ADDRESS = 0x68  # Default I2C address for MPU6050
+bus = smbus.SMBus(1)
+bus.write_byte_data(IMU_ADDRESS, 0x6B, 0)  # Wake up MPU6050
+
+def read_imu():
+    accel_x = bus.read_word_data(IMU_ADDRESS, 0x3B)
+    accel_y = bus.read_word_data(IMU_ADDRESS, 0x3D)
+    accel_z = bus.read_word_data(IMU_ADDRESS, 0x3F)
+    gyro_x = bus.read_word_data(IMU_ADDRESS, 0x43)
+    gyro_y = bus.read_word_data(IMU_ADDRESS, 0x45)
+    gyro_z = bus.read_word_data(IMU_ADDRESS, 0x47)
+    return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
+
+# ----- PID Controller -----
+class PID:
+    def __init__(self, kp, ki, kd):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.prev_error = 0
+        self.integral = 0
+
+    def compute(self, setpoint, measured_value):
+        error = setpoint - measured_value
+        self.integral += error
+        derivative = error - self.prev_error
+        output = (self.kp * error) + (self.ki * self.integral) + (self.kd * derivative)
+        self.prev_error = error
+        return output
+
+# ----- Hardware Configuration -----
+ESC_PINS = [26, 13, 12, 6]  # Adjust as per your wiring
+MIN_THROTTLE = 900
+MAX_THROTTLE = 2200
+HOVER_THROTTLE = (MIN_THROTTLE + MAX_THROTTLE) // 2
+# Initialize pigpio
+pi = pigpio.pi()
+if not pi.connected:
+    raise SystemExit("pigpio daemon is not running!")
+
+# ----- Extended Kalman Filter (EKF) for Sensor Fusion -----
+class EKF:
+    def __init__(self):
+        self.x = np.zeros((4, 1))  # State vector [x, y, vx, vy]
+        self.P = np.eye(4) * 500
+        self.F = np.eye(4)
+        self.Q = np.eye(4) * 0.1
+        self.H = np.eye(4)
+        self.R = np.eye(4) * 10
+
+    def predict(self, dt):
+        self.F[0, 2] = dt
+        self.F[1, 3] = dt
+        self.x = np.dot(self.F, self.x)
+        self.P = np.dot(np.dot(self.F, self.P), self.F.T) + self.Q
+
+    def update(self, z):
+        y = z - np.dot(self.H, self.x)
+        S = np.dot(self.H, np.dot(self.P, self.H.T)) + self.R
+        K = np.dot(np.dot(self.P, self.H.T), np.linalg.inv(S))
+        self.x += np.dot(K, y)
+        self.P = np.dot((np.eye(4) - np.dot(K, self.H)), self.P)
+
+# EKF instance
+ekf = EKF()
+
+# PID instance for altitude control
+pid = PID(kp=1.2, ki=0.01, kd=0.5)
+
+# ----- Motor Control Functions -----
+def set_motor_speed(motor_index, speed):
+    pin = ESC_PINS[motor_index]
+    pi.set_servo_pulsewidth(pin, speed)
+    print(f"Motor {motor_index+1} set to {speed}")
+
+def update_motor_speed(motor_index, value):
+    speed = int(float(value))
+    set_motor_speed(motor_index, speed)
+
+def update_all_motors(value):
+    speed = int(float(value))
+    for i in range(4):
+        set_motor_speed(i, speed)
+
+def hover():
+    print("HOVER mode activated")
+    for i in range(4):
+        set_motor_speed(i, HOVER_THROTTLE)
+def move_forward():
+    print("Moving FORWARD")
+    set_motor_speed(0, MIN_THROTTLE + 50)
+    set_motor_speed(1, MIN_THROTTLE + 50)
+    set_motor_speed(2, MAX_THROTTLE - 50)
+    set_motor_speed(3, MAX_THROTTLE - 50)
+
+def move_backward():
+    print("Moving BACKWARD")
+    set_motor_speed(0, MAX_THROTTLE - 50)
+    set_motor_speed(1, MAX_THROTTLE - 50)
+    set_motor_speed(2, MIN_THROTTLE + 50)
+    set_motor_speed(3, MIN_THROTTLE + 50)
+
+def move_left():
+    print("Moving LEFT")
+    set_motor_speed(0, MIN_THROTTLE + 50)
+    set_motor_speed(1, MAX_THROTTLE - 50)
+    set_motor_speed(2, MIN_THROTTLE + 50)
+    set_motor_speed(3, MAX_THROTTLE - 50)
+
+def move_right():
+    print("Moving RIGHT")
+    set_motor_speed(0, MAX_THROTTLE - 50)
+    set_motor_speed(1, MIN_THROTTLE + 50)
+    set_motor_speed(2, MAX_THROTTLE - 50)
+    set_motor_speed(3, MIN_THROTTLE + 50)
+
+def stop_motors():
+    for pin in ESC_PINS:
+        pi.set_servo_pulsewidth(pin, 0)
+    print("All motors stopped.")
+
+# ----- Main GUI Setup -----
+root = tk.Tk()
+root.title("Drone Control System")
+root.geometry("500x600")
+
+title_label = tk.Label(root, text="Drone Motor & Flight Control", font=("Arial", 16, "bold"))
+title_label.pack(pady=10)
+
+title_label = tk.Label(root, text="Author: Uzam Haider", font=("Arial", 12, ""))
+title_label.pack(pady=10)
+
+motor_frame = tk.LabelFrame(root, text="Motor Speed Control", padx=10, pady=10, font=("Arial", 12))
+motor_frame.pack(padx=10, pady=5, fill="both")
+
+sliders = []
+for i in range(4):
+    label = tk.Label(motor_frame, text=f"Motor {i+1} Speed", font=("Arial", 10))
+    label.pack()
+    slider = ttk.Scale(motor_frame, from_=MIN_THROTTLE, to=MAX_THROTTLE, orient="horizontal", length=300,
+                       command=lambda value, i=i: update_motor_speed(i, value))
+    slider.set(MIN_THROTTLE)
+    slider.pack(pady=3)
+    sliders.append(slider)
+
+hover_button = tk.Button(root, text="HOVER", width=10, command=hover)
+hover_button.pack(pady=5)
+
+forward_button = tk.Button(root, text="FORWARD", width=10, command=move_forward)
+forward_button.pack(pady=5)
+
+backward_button = tk.Button(root, text="BACKWARD", width=10, command=move_backward)
+backward_button.pack(pady=5)
+
+left_button = tk.Button(root, text="LEFT", width=10, command=move_left)
+left_button.pack(pady=5)
+
+right_button = tk.Button(root, text="RIGHT", width=10, command=move_right)
+right_button.pack(pady=5)
+
+stop_button = tk.Button(root, text="EMERGENCY STOP", command=stop_motors, fg="white", bg="red", font=("Arial", 12, "bold"))
+stop_button.pack(pady=20)
+
+# Run GUI Loop
+root.mainloop()
+
+pi.stop()
