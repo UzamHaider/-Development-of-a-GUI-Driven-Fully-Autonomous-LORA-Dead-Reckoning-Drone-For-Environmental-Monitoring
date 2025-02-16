@@ -1,0 +1,151 @@
+import numpy as np
+import tkinter as tk
+from tkinter import ttk
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+# Initialize sensor values
+roll = pitch = yaw = 0.0
+gyro_x = gyro_y = gyro_z = 0.0
+accel_x = accel_y = accel_z = 0.0
+altitude = 0.0
+
+# Kalman Filter (EKF) Parameters
+state = np.zeros(6)  # State vector: [x, y, z, vx, vy, vz]
+covariance = np.eye(6) * 0.1  # Covariance matrix
+process_noise = np.eye(6) * 0.01  # Process noise
+measurement_noise = np.eye(6) * 0.1  # Measurement noise
+
+# Kalman Filter Prediction Step
+def ekf_predict(state, covariance):
+    A = np.eye(6)  # Linear motion model
+    state = A @ state  # Predict state
+    covariance = A @ covariance @ A.T + process_noise  # Update covariance
+    return state, covariance
+
+# Kalman Filter Update Step
+def ekf_update(state, covariance, measurement):
+    H = np.eye(6)  # Measurement model
+    K = covariance @ H.T @ np.linalg.inv(H @ covariance @ H.T + measurement_noise)  # Kalman Gain
+    state = state + K @ (measurement - H @ state)  # Update state
+    covariance = (np.eye(6) - K @ H) @ covariance  # Update covariance
+    return state, covariance
+
+# Update sensor values randomly
+def update_sensors():
+    global roll, pitch, yaw, gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z, altitude
+
+    roll += np.random.normal(0, 0.1)
+    pitch += np.random.normal(0, 0.1)
+    yaw += np.random.normal(0, 0.1)
+    gyro_x += np.random.normal(0, 0.01)
+    gyro_y += np.random.normal(0, 0.01)
+    gyro_z += np.random.normal(0, 0.01)
+    accel_x += np.random.normal(0, 0.05)
+    accel_y += np.random.normal(0, 0.05)
+    accel_z += np.random.normal(0, 0.05)
+    altitude += np.random.normal(0, 0.05)
+# Create GUI Window
+root = tk.Tk()
+root.title("Drone Sensor Monitoring & Kalman Filter")
+root.geometry("800x600")
+
+# Create Frames
+frame_top = tk.Frame(root)
+frame_top.pack(side=tk.TOP, fill=tk.X)
+
+frame_bottom = tk.Frame(root)
+frame_bottom.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+
+# Display "Developer: Uzam Haider" at the top, centered and bold
+tk.Label(frame_top, text="Developer: Uzam Haider", font=("Arial", 14, "")).pack(pady=10)
+
+# Labels for Sensor Data
+labels = [
+    "Roll", "Pitch", "Yaw",
+    "Gyro X", "Gyro Y", "Gyro Z",
+    "Accel X", "Accel Y", "Accel Z",
+    "Altitude"
+]
+sensor_vars = {label: tk.StringVar(value="0.0") for label in labels}
+
+# Using pack for sensor labels
+for label in labels:
+    label_frame = tk.Frame(frame_top)
+    label_frame.pack(anchor="w", pady=2)
+
+    tk.Label(label_frame, text=label, font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=10)
+    tk.Label(label_frame, textvariable=sensor_vars[label], font=("Arial", 10)).pack(side=tk.LEFT)
+
+# Start & Stop Buttons (Arranged in the top frame with a little padding)
+button_frame = tk.Frame(frame_top)
+button_frame.pack(pady=10)
+
+ttk.Button(button_frame, text="Start", command=lambda: start_simulation()).pack(side=tk.LEFT, padx=20)
+ttk.Button(button_frame, text="Stop", command=lambda: stop_simulation()).pack(side=tk.LEFT, padx=20)
+
+# Matplotlib Figure for Kalman Filter
+fig, ax = plt.subplots(figsize=(5, 3))
+ax.set_title("Kalman Filter State Estimation")
+ax.set_xlim(0, 10)
+ax.set_ylim(-2, 2)
+ax.set_xlabel("Time")
+ax.set_ylabel("State")
+line, = ax.plot([], [], "r-")
+
+# Add the canvas to the Tkinter window
+canvas = FigureCanvasTkAgg(fig, master=frame_bottom)
+canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+time_values = []
+state_values = []
+
+# Update GUI & Kalman Filter
+running = False
+def update_gui():
+    global state, covariance, running
+
+    if not running:
+        return
+
+    update_sensors()
+
+    measurement = np.array([roll, pitch, yaw, gyro_x, gyro_y, gyro_z])
+    state, covariance = ekf_update(state, covariance, measurement)
+# Update UI Labels
+    sensor_vars["Roll"].set(f"{roll:.2f}")
+    sensor_vars["Pitch"].set(f"{pitch:.2f}")
+    sensor_vars["Yaw"].set(f"{yaw:.2f}")
+    sensor_vars["Gyro X"].set(f"{gyro_x:.2f}")
+    sensor_vars["Gyro Y"].set(f"{gyro_y:.2f}")
+    sensor_vars["Gyro Z"].set(f"{gyro_z:.2f}")
+    sensor_vars["Accel X"].set(f"{accel_x:.2f}")
+    sensor_vars["Accel Y"].set(f"{accel_y:.2f}")
+    sensor_vars["Accel Z"].set(f"{accel_z:.2f}")
+    sensor_vars["Altitude"].set(f"{altitude:.2f}")
+
+    # Update Kalman Filter Graph
+    time_values.append(len(time_values))
+    state_values.append(state[0])  # Plot X position
+
+    line.set_xdata(time_values)
+    line.set_ydata(state_values)
+    ax.set_xlim(0, max(10, len(time_values)))  # Auto-scale X-axis
+    ax.set_ylim(min(state_values) - 1, max(state_values) + 1)  # Auto-scale Y-axis
+
+    canvas.draw()
+
+    root.after(500, update_gui)  # Update every 500ms
+
+# Start & Stop Button Functions
+def start_simulation():
+    global running
+    if not running:
+        running = True
+        update_gui()
+
+def stop_simulation():
+    global running
+    running = False
+
+root.mainloop()
