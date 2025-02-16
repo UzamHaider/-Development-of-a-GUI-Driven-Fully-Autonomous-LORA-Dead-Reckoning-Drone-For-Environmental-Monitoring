@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""
+Development of Advanced GUI-Driven Dead-Reckoning Based Fully Autonomous Long Range Drone
+For Environmental Monitoring using LORA technique and Extended Kalman Filter
+"""
+
+import time
+import pigpio
+import tkinter as tk
+from tkinter import ttk, messagebox
+import math
+import random
+
+# ----- Global Simulation Variables -----
+MAP_WIDTH = 600
+MAP_HEIGHT = 600
+GRID_SPACING = 50
+DRONE_SPEED = 2.0       # Base speed in pixels per update (simulate speed)
+UPDATE_INTERVAL = 100   # in milliseconds
+
+initial_pos = None   # (x, y) set by user on canvas
+final_pos = None     # (x, y) set by user on canvas
+drone_pos = [MAP_WIDTH//2, MAP_HEIGHT//2]  # Initial position at the center of the map
+drone_marker = None  # Canvas object for the drone
+
+elapsed_time = 0.0      # in seconds
+distance_traveled = 0.0 # in pixels
+imu_speed = DRONE_SPEED  # Simulated IMU speed in pixels per update
+
+simulation_running = False
+
+# ----- Hardware Configuration -----
+ESC_PINS = [26, 13, 12, 6]  
+MIN_THROTTLE = 900
+MAX_THROTTLE = 2200
+HOVER_THROTTLE = (MIN_THROTTLE + MAX_THROTTLE) // 2
+
+# Initialize pigpio
+pi = pigpio.pi()
+if not pi.connected:
+    raise SystemExit("pigpio daemon is not running!")
+
+# ----- Motor Control Functions -----
+def set_motor_speed(motor_index, speed):
+    pi.set_servo_pulsewidth(ESC_PINS[motor_index], speed)
+    print(f"Motor {motor_index+1} set to {speed}")
+
+def stop_motors():
+    for pin in ESC_PINS:
+        pi.set_servo_pulsewidth(pin, 0)
+    print("All motors stopped.")
+
+def update_motor_speed(motor_index, value):
+    set_motor_speed(motor_index, int(float(value)))
+
+def update_all_motors(value):
+    for i in range(4):
+        set_motor_speed(i, int(float(value)))
+
+def arm_escs():
+    print("Arming ESCs...")
+    for pin in ESC_PINS:
+        pi.set_servo_pulsewidth(pin, 0)
+    time.sleep(1)
+    for pin in ESC_PINS:
+        pi.set_servo_pulsewidth(pin, MIN_THROTTLE)
+    time.sleep(2)
+    print("ESCs armed.")
+# ----- Directional Control Functions -----
+def move_left():
+    print("Moving LEFT")
+    set_motor_speed(0, MIN_THROTTLE + 100)
+    set_motor_speed(2, MIN_THROTTLE + 100)
+    set_motor_speed(1, MAX_THROTTLE - 100)
+    set_motor_speed(3, MAX_THROTTLE - 100)
+
+def move_right():
+    print("Moving RIGHT")
+    set_motor_speed(0, MAX_THROTTLE - 100)
+    set_motor_speed(2, MAX_THROTTLE - 100)
+    set_motor_speed(1, MIN_THROTTLE + 100)
+    set_motor_speed(3, MIN_THROTTLE + 100)
+
+def move_forward():
+    print("Moving FORWARD")
+    set_motor_speed(0, MIN_THROTTLE + 50)
+    set_motor_speed(1, MIN_THROTTLE + 50)
+    set_motor_speed(2, MAX_THROTTLE - 50)
+    set_motor_speed(3, MAX_THROTTLE - 50)
+
+def move_backward():
+    print("Moving BACKWARD")
+    set_motor_speed(0, MAX_THROTTLE - 50)
+    set_motor_speed(1, MAX_THROTTLE - 50)
+    set_motor_speed(2, MIN_THROTTLE + 50)
+    set_motor_speed(3, MIN_THROTTLE + 50)
+
+def ascend():
+    print("Ascending")
+    for i in range(4):
+        set_motor_speed(i, MAX_THROTTLE - 100)
+    
+def descend():
+    print("Descending")
+    for i in range(4):
+        set_motor_speed(i, MIN_THROTTLE + 100)
+
+def hover():
+    print("HOVER mode activated")
+    for i in range(4):
+        set_motor_speed(i, HOVER_THROTTLE)
+
+# ----- GUI Setup -----
+root = tk.Tk()
+root.title("Drone Autonomous Navigation Simulation")
+root.geometry("900x650")
+
+# Left frame: Map; Right frame: Info and controls
+frame_map = tk.Frame(root)
+frame_map.grid(row=0, column=0, padx=10, pady=10)
+frame_info = tk.Frame(root)
+frame_info.grid(row=0, column=1, padx=10, pady=10, sticky="n")
+
+# ----- Map Canvas (Left Side) -----
+canvas = tk.Canvas(frame_map, width=MAP_WIDTH, height=MAP_HEIGHT, bg="white")
+canvas.grid(row=0, column=0)
+
+# Draw grid lines to simulate a real-world map.
+for x in range(0, MAP_WIDTH, GRID_SPACING):
+    canvas.create_line(x, 0, x, MAP_HEIGHT, fill="lightgray")
+for y in range(0, MAP_HEIGHT, GRID_SPACING):
+    canvas.create_line(0, y, MAP_WIDTH, y, fill="lightgray")
+
+# Draw cardinal directions.
+canvas.create_text(MAP_WIDTH//2, 20, text="N", font=("Arial", 12, "bold"))
+canvas.create_text(MAP_WIDTH//2, MAP_HEIGHT-20, text="S", font=("Arial", 12, "bold"))
+canvas.create_text(MAP_WIDTH-20, MAP_HEIGHT//2, text="E", font=("Arial", 12, "bold"))
+canvas.create_text(20, MAP_HEIGHT//2, text="W", font=("Arial", 12, "bold"))
+
+# ----- Info Panel (Right Side) -----
+tk.Label(frame_info, text="Developer: Uzam Haider", font=("Arial", 14, "bold")).pack(pady=10)
+
+initial_label = tk.Label(frame_info, text="Initial Position: Not Set", font=("Arial", 12))
+initial_label.pack(pady=5)
+final_label = tk.Label(frame_info, text="Final Position: Not Set", font=("Arial", 12))
+final_label.pack(pady=5)
+status_label = tk.Label(frame_info, text="Status: Waiting for positions...", font=("Arial", 12, "italic"))
+status_label.pack(pady=10)
+
+distance_label = tk.Label(frame_info, text="Remaining Distance: N/A", font=("Arial", 12))
+distance_label.pack(pady=5)
+time_label = tk.Label(frame_info, text="Time Elapsed: 0.0 sec", font=("Arial", 12))
+time_label.pack(pady=5)
+
+imu_speed_label = tk.Label(frame_info, text="IMU Speed: 0.0 pix/update", font=("Arial", 12))
+imu_speed_label.pack(pady=5)
+distance_traveled_label = tk.Label(frame_info, text="Distance Traveled: 0.0 pixels", font=("Arial", 12))
+distance_traveled_label.pack(pady=5)
+
+# ----- Functions for Position Setting -----
+def set_mode_initial(event):
+    global initial_pos, position_mode
+    position_mode = "initial"
+    initial_pos = (event.x, event.y)
+    canvas.create_oval(initial_pos[0]-5, initial_pos[1]-5, initial_pos[0]+5, initial_pos[1]+5, fill="green")
+    initial_label.config(text=f"Initial Position: {initial_pos}")
+
+def set_mode_final(event):
+    global final_pos, position_mode
+    if position_mode == "initial":
+        final_pos = (event.x, event.y)
+        canvas.create_oval(final_pos[0]-5, final_pos[1]-5, final_pos[0]+5, final_pos[1]+5, fill="blue")
+        final_label.config(text=f"Final Position: {final_pos}")
+        status_label.config(text="Status: Moving...")
+
+def start_simulation():
+    global simulation_running
+    simulation_running = True
+    move_drone()
+
+def stop_simulation():
+    global simulation_running
+    simulation_running = False
+    status_label.config(text="Status: Stopped")
+
+# Simulate the drone's movement
+def move_drone():
+    global drone_pos, elapsed_time, distance_traveled
+    if simulation_running and final_pos:
+        target_x, target_y = final_pos
+        dx = target_x - drone_pos[0]
+        dy = target_y - drone_pos[1]
+        distance = math.sqrt(dx**2 + dy**2)
+        if distance > 1:
+
+            # Move drone
+            drone_pos[0] += imu_speed * (dx / distance)
+            drone_pos[1] += imu_speed * (dy / distance)
+            distance_traveled += imu_speed
+            elapsed_time += 1 / 30  # Assuming 30 FPS
+
+            # Update canvas position
+            canvas.coords(drone_marker, drone_pos[0]-10, drone_pos[1]-10, drone_pos[0]+10, drone_pos[1]+10)
+
+            # Update info panel
+            distance_label.config(text=f"Remaining Distance: {round(distance, 2)} pixels")
+            distance_traveled_label.config(text=f"Distance Traveled: {round(distance_traveled, 2)} pixels")
+            time_label.config(text=f"Time Elapsed: {round(elapsed_time, 2)} sec")
+            imu_speed_label.config(text=f"IMU Speed: {imu_speed} pix/update")
+            root.after(UPDATE_INTERVAL, move_drone)
+        else:
+            stop_simulation()
+
+# ----- Control Buttons -----
+move_btn_frame = tk.Frame(frame_info)
+move_btn_frame.pack(pady=20)
+
+tk.Button(move_btn_frame, text="Start Simulation", command=start_simulation).pack(side=tk.LEFT, padx=5)
+tk.Button(move_btn_frame, text="Stop Simulation", command=stop_simulation).pack(side=tk.LEFT, padx=5)
+
+# ----- Initialize Simulation -----
+drone_marker = canvas.create_oval(drone_pos[0]-10, drone_pos[1]-10, drone_pos[0]+10, drone_pos[1]+10, fill="black")
+
+# ----- Event Binding -----
+canvas.bind("<Button-1>", set_mode_initial)
+canvas.bind("<Button-3>", set_mode_final)
+
+# ----- Main loop -----
+root.mainloop()
